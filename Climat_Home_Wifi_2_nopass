@@ -1,0 +1,482 @@
+#include <WiFiClientSecure.h>
+#include <ESP8266WiFi.h>
+#include <WiFiClient.h>
+#include <ESP8266WebServer.h>
+#include <ESP8266mDNS.h>
+#include <ESP8266HTTPClient.h>
+//#include <ArduinoJson.h>
+#include "DHT.h"
+//#define DHTPIN 2     // контакт, к которому подключаемся
+#define TSCORE 1000 // настраиваем время опроса датчика с милисекундах / и дискретности ПИД
+#define DT (TSCORE / 1000 )  //time дискретности ПИД in sec
+#define KP 7
+#define KI 0.2
+#define KD 3
+#define Maxcouter 250
+//  расскомментировать строчку нужного датчика:
+#define DHTTYPE DHT11   // DHT 11
+//#define DHTTYPE DHT22   // DHT 22  (AM2302)
+//#define DHTTYPE DHT21   // DHT 21 (AM2301)
+// инициализируйте датчик DHT
+
+MDNSResponder mdns;
+
+// Wi-Fi
+const char* ssid = "";
+const char* password = "";
+
+byte arduino_mac[] = { 0xDE, 0xED, 0xBA, 0xFE, 0xFE, 0xED };
+IPAddress ip(192, 168, 0, 10);
+IPAddress gateway(192, 168, 0, 1);
+IPAddress subnet(255, 255, 255, 0);
+IPAddress dns (192, 168, 0, 1);
+
+ESP8266WebServer server(80);
+
+
+int D0_pin = 16;
+int D1_pin = 5;  // holl input sensor
+int D2_pin = 4;  // Child input sensor
+int D3_pin = 0;  // Badroom input sensor
+int D4_pin = 2;
+int D5_pin = 14; // holl
+int D6_pin = 12; // holl
+int D7_pin = 13; // Child
+int D8_pin = 15;  // Badroom
+
+unsigned long Timer = 0;
+unsigned long Timen = 0;
+unsigned long TimerH = 0;
+float t = 0;
+float toldHoll = 0;
+float toldChild = 0;
+float toldBad = 0;
+int SetTempHoll = 25;
+int SetTempChild = 25;
+int SetTempBad = 25;
+bool healsup = true;
+bool hollerror = false;
+bool childerror = false;
+bool baderror = false;
+
+DHT dhtH(D1_pin, DHTTYPE);  // Иницируем датчик Holl
+DHT dhtC(D2_pin, DHTTYPE);  // Иницируем датчик  ChildRoom
+DHT dhtB(D3_pin, DHTTYPE);  // Иницируем датчик BadRoom
+
+//WiFiClient wifiClient;
+void setup(void) {
+  dhtH.begin();
+  dhtC.begin();
+  dhtB.begin();
+
+  // preparing GPIOs
+  pinMode(D5_pin, OUTPUT);
+  digitalWrite(D5_pin, LOW);
+  pinMode(D6_pin, OUTPUT);
+  digitalWrite(D6_pin, LOW);
+  pinMode(D7_pin, OUTPUT);
+  digitalWrite(D7_pin, LOW);
+  pinMode(D8_pin, OUTPUT);
+  digitalWrite(D8_pin, LOW);
+
+
+  delay(100);
+  Serial.begin(115200);
+  WiFi.begin(ssid, password);
+  WiFi.config(ip, gateway, subnet, dns);
+
+
+  Serial.println("");
+
+  // Wait for connection
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("");
+  Serial.print("Connected to ");
+  Serial.println(ssid);
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  if (mdns.begin("esp8266", WiFi.localIP())) {
+    Serial.println("MDNS responder started");
+  }
+
+  //+++++++++++++++++++++++ START  1 Floer ++++++++++++++++++++
+  server.on("/", []() {
+    server.send(200, "text/html", webPage());
+  });
+  server.on("/socket1On", []() {
+    SetTempHoll = SetTempHoll - 1;
+    if (SetTempHoll < 5) {
+      SetTempHoll = 5;
+    }
+    server.send(200, "text/html", webPage());
+    delay(100);
+
+  });
+  server.on("/socket1Off", []() {
+    SetTempHoll = SetTempHoll + 1;
+    if (SetTempHoll > 35) {
+      SetTempHoll = 35;
+    }
+    server.send(200, "text/html", webPage());
+    delay(100);
+    //+++++++++++++++++++++++ END 1 Floer ++++++++++++++++++++
+
+    //+++++++++++++++++++++++ START Children  ++++++++++++++++++++
+  });
+  server.on("/socket2On", []() {
+    SetTempChild = SetTempChild - 1;
+    if (SetTempChild < 5) {
+      SetTempChild = 5;
+    }
+    server.send(200, "text/html", webPage());
+    delay(100);
+  });
+  server.on("/socket2Off", []() {
+    SetTempChild = SetTempChild + 1;
+    if (SetTempChild > 35) {
+      SetTempChild = 35;
+    }
+    server.send(200, "text/html", webPage());
+    delay(100);
+
+    // +++++++++++++++++++++++ END  Children ++++++++++++++++++++
+
+    //+++++++++++++++++++++++ START  Bedroom  ++++++++++++++++++++
+  });
+  server.on("/socket3On", []() {
+    SetTempBad = SetTempBad - 1;
+    if (SetTempBad < 5) {
+      SetTempBad = 5;
+    }
+    server.send(200, "text/html", webPage());
+    delay(100);
+  });
+  server.on("/socket3Off", []() {
+    SetTempBad = SetTempBad + 1;
+    if (SetTempBad > 35) {
+      SetTempBad = 35;
+    }
+    server.send(200, "text/html", webPage());
+    delay(100);
+
+    // +++++++++++++++++++++++ END  Bedroom ++++++++++++++++++++
+
+
+  });
+  server.begin();
+  Serial.println("HTTP server started");
+
+
+  TelegramPrint("Привет мир мы загрузились и будем делать Вашу жизнь лучше! Я умное безумное управление отоплением, управляй мной тут http://192.168.65.10");
+
+
+}
+void TelegramPrint(String message) {
+  std::unique_ptr<BearSSL::WiFiClientSecure>client(new BearSSL::WiFiClientSecure);
+  client->setInsecure();
+  HTTPClient https;
+  if (https.begin(*client, "https://api.telegram.org/bot5148708564:AAGuYB6Qq80cIdriH2PhK9i6j4mrNUnWT14/")) { // Тут свой ключ пишем
+    https.addHeader("Content-Type", "application/json");
+    https.POST("{\"method\":\"sendMessage\",\"chat_id\":-1001712190570,\"text\":\"" + message + "\"}"); // Тут свой чат id пишем
+    https.end();
+  }
+}
+
+
+int HollSet() {
+  static byte errcountH = 0;
+  if (isnan(t)) {
+    //   digitalWrite(D5_pin, LOW) ;
+    //   digitalWrite(D6_pin, LOW) ;
+    if (t != toldHoll) {
+      if (hollerror == false) {
+        TelegramPrint("На первом этаже не работает Отопление");
+        hollerror = true;
+      }
+    }
+    return (0);
+  }
+  else {
+    if (hollerror == true) {
+      TelegramPrint("На первом этаже Отопление заработало, УРА!");
+      hollerror = false;
+    }
+    if (t < 20 && t != toldHoll ) {
+      if (errcountH < 3) {
+        TelegramPrint("Дом замерзает уже ниже 20с, срочно все проверь, что твориться на 1-м этаже");
+        errcountH += 1;
+      }
+    }
+    else if (t > 37 && t != toldHoll ) {
+      if (errcountH < 3) {
+        TelegramPrint("Дом стал баней уже больше 37с, срочно все проверь, что твориться на 1-м этаже");
+        errcountH += 1;
+      }
+    }
+    else {
+      errcountH = 0;
+    }
+    float p = SetTempHoll - t;
+    static float ikiH = 0, preverr = 0;
+     ikiH += p / DT;
+    if (ikiH < 0){
+      ikiH=0;
+    }
+    float d = ( p - preverr ) / DT;
+    preverr = p;
+    return (p * KP + ikiH * KI + d * KD);
+  }
+}
+
+
+void ChildSet() {
+  static byte errcountG = 0;
+  if (isnan(t)) {
+    digitalWrite(D7_pin, LOW);
+    if (t != toldChild) {
+      if (childerror == false) {
+
+        TelegramPrint("В детсткой комнате не работает Отопление");
+        childerror = true;
+      }
+    }
+  }
+  else {
+    if (childerror == true) {
+
+      TelegramPrint("В детсткой комнате Отопление заработало, УРА!");
+      childerror = false;
+    }
+    if (t < 20 && t != toldChild ) {
+      if (errcountG < 3) {
+        TelegramPrint("Дети замерзают уже ниже 20с, срочно все проверь, что твориться в детской");
+        errcountG += 1;
+      }
+    }
+    else if (t > 37 && t != toldChild ) {
+      if (errcountG < 3 ) {
+        TelegramPrint("Аяй сваришь детей уже больше 37с, срочно все проверь, что твориться в детской");
+        errcountG += 1;
+      }
+    }
+    else {
+      errcountG = 0;
+    }
+
+    if (t > toldChild) {
+      if (t < SetTempChild - 1) {
+        digitalWrite(D7_pin, HIGH);
+      }
+      else {
+        digitalWrite(D7_pin, LOW);
+      }
+    }
+    else {
+      if (t < SetTempChild) {
+        digitalWrite(D7_pin, HIGH);
+      }
+      else {
+        digitalWrite(D7_pin, LOW);
+      }
+
+    }
+  }
+}
+
+void BadSet() {
+  static byte errcountB = 0;
+  if (isnan(t)) {
+    digitalWrite(D8_pin, LOW) ;
+    if (t != toldBad) {
+      if (baderror == false) {
+        TelegramPrint("У Лены в комнате не работает Отопление");
+        baderror = true;
+      }
+    }
+  }
+  else {
+    if (baderror == false) {
+      TelegramPrint("У Лены в комнате Отопление заработало, УРА!");
+      baderror = false;
+    }
+    if (t < 20 && t != toldBad ) {
+      if ( errcountB < 3) {
+        TelegramPrint("У Лены в комнате уже ниже 20с, срочно все проверь, а то замерзнет ещё");
+        errcountB += 1;
+      }
+    }
+    else if (t > 37 && t != toldBad ) {
+      if ( errcountB < 3) {
+        TelegramPrint("У Лены в комнате уже больше 37с, срочно все проверь, возмжно там хорошо");
+        errcountB += 1;
+      }
+    }
+    else {
+      errcountB = 0;
+    }
+    if (t > toldBad) {
+      if (t < SetTempBad - 1) {
+        digitalWrite(D8_pin, HIGH);
+      }
+      else {
+        digitalWrite(D8_pin, LOW) ;
+
+      }
+    }
+    else {
+      if (t < SetTempBad) {
+        digitalWrite(D8_pin, HIGH);
+      }
+      else {
+        digitalWrite(D8_pin, LOW);
+      }
+
+    }
+  }
+}
+
+
+void loop(void) {
+  server.handleClient();
+  Timen = millis();
+  if ( Timen >= TimerH) {
+    if (toldHoll < SetTempHoll) {
+      digitalWrite(D5_pin, HIGH);
+      digitalWrite(D6_pin, HIGH);
+    }
+    else {
+      digitalWrite(D5_pin, LOW);
+      digitalWrite(D6_pin, LOW);
+    }
+  }
+  if ( Timen >= Timer) {
+
+
+    t = dhtH.readTemperature();
+
+    TimerH = Timen + map( HollSet(), 0 , Maxcouter , TSCORE , 0);
+    Serial.println(HollSet());
+    toldHoll = t;
+    if (TimerH > Timen) {
+      digitalWrite(D5_pin, LOW);
+      digitalWrite(D6_pin, LOW);
+    }
+
+    t = dhtC.readTemperature();
+
+    ChildSet();
+    toldChild = t;
+
+
+    t = dhtB.readTemperature();
+
+    BadSet();
+    toldBad = t;
+    //
+    //    Serial.print(SetTempHoll);
+    //
+    //    Serial.print(" %\t");
+    //    Serial.print("Temperature: ");  //  "Температура: "
+    //    Serial.print(t);
+    //    Serial.print(" *C ");
+    Serial.print(toldHoll);
+    //    Serial.print("OLD T   ");
+    //    Serial.print(healsup);
+    //    Serial.print("= UP   ");
+    //
+    //    Serial.println(Timer);
+    //    Serial.println(TimerH - Timen );
+    //    Serial.println();
+    //    t = 0;
+    Timer = Timen + TSCORE;
+
+  }
+
+
+
+
+}
+
+
+String webPage()
+{
+  String web;
+  web += "<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/> <meta charset=\"utf-8\"><title>Дом Управление Температурой</title><style>button{color:red;padding: 10px 27px;}</style></head>";
+  web += "<h1 style=\"text-align: center;font-family: Open sans;font-weight: 100;font-size: 20px;\">Температура в доме</h1><div>";
+  //++++++++++ Holl  +++++++++++++
+  if (isnan(toldHoll)) {
+    web += "<p style=\"text-align: center;margin-top: 0px;margin-bottom: 5px;\">Первый Этаж</p>";
+    web += "<div style=\"text-align: center;width: 98px;color:white ;padding: 10px 30px;background-color:  #ec1212;margin: 0 auto;\">Sensor Error:";
+    web += toldHoll;
+    web += " Set:";
+    web += SetTempHoll;
+    web += "</div>";
+  }
+  else
+  {
+    web += "<p style=\"text-align: center;margin-top: 0px;margin-bottom: 5px;\">Первый Этаж</p>";
+    web += "<div style=\"text-align: center;width: 98px;color:white ;padding: 10px 30px;background-color: #43a209;margin: 0 auto;\">Actual:";
+    web += toldHoll;
+    web += " Set:";
+    web += SetTempHoll;
+    web += "</div>";
+  }
+  web += "<div style=\"text-align: center;margin: 5px 0px;\"> <a href=\"socket1On\"><button><</button></a>&nbsp;<a href=\"socket1Off\"><button>></button></a></div>";
+  // ++++++++ Holl +++++++++++++
+
+  //++++++++++ ChildrenRoom  +++++++++++++
+  if (isnan(toldChild)) {
+    web += "<p style=\"text-align: center;margin-top: 0px;margin-bottom: 5px;\">Детская</p>";
+    web += "<div style=\"text-align: center;width: 98px;color:white ;padding: 10px 30px;background-color:  #ec1212;margin: 0 auto;\">Sensor Error:";
+    web += toldChild;
+    web += " Set:";
+    web += SetTempChild;
+    web += "</div>";
+  }
+  else {
+    web += "<p style=\"text-align: center;margin-top: 0px;margin-bottom: 5px;\">Детская</p>";
+    web += "<div style=\"text-align: center;width: 98px;color:white ;padding: 10px 30px;background-color: #43a209;margin: 0 auto;\">Actual:";
+    web += toldChild;
+    web += " Set:";
+    web += SetTempChild;
+    web += "</div>";
+  }
+  web += "<div style=\"text-align: center;margin: 5px 0px;\"> <a href=\"socket2On\"><button><</button></a>&nbsp;<a href=\"socket2Off\"><button>></button></a></div>";
+
+  // ++++++++ ChildrenRoom +++++++++++++
+
+  //++++++++++ Badroom  +++++++++++++
+  if (isnan(toldBad)) {
+    web += "<p style=\"text-align: center;margin-top: 0px;margin-bottom: 5px;\">Ленина комната</p>";
+    web += "<div style=\"text-align: center;width: 98px;color:white ;padding: 10px 30px;background-color:  #ec1212;margin: 0 auto;\">Sensor Error:";
+    web += toldBad;
+    web += " Set:";
+    web += SetTempBad;
+    web += "</div>";
+  }
+  else {
+    web += "<p style=\"text-align: center;margin-top: 0px;margin-bottom: 5px;\">Ленина комната</p>";
+    web += "<div style=\"text-align: center;width: 98px;color:white ;padding: 10px 30px;background-color: #43a209;margin: 0 auto;\">Actual:";
+    web += toldBad;
+    web += " Set:";
+    web += SetTempBad;
+    web += "</div>";
+  }
+  web += "<div style=\"text-align: center;margin: 5px 0px;\"> <a href=\"socket3On\"><button><</button></a>&nbsp;<a href=\"socket3Off\"><button>></button></a></div>";
+  // ++++++++ Badroom +++++++++++++
+
+  // ========REFRESH=============
+  web += "<div style=\"text-align:center;margin-top: 20px;\"><a href=\"/\"><button style=\"width:158px;\">REFRESH</button></a></div>";
+  // ========REFRESH=============
+
+
+  web += "</div>";
+  return (web);
+
+
+
+}
